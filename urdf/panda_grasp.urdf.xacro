@@ -1,0 +1,98 @@
+<?xml version="1.0"?>
+<!-- The stock franka_gazebo Panda plus the gazebo_grasp_fix model plugin.
+
+     Why a wrapper at all: gazebo_grasp_fix is a *model* plugin, so it has to be
+     inside the robot's own URDF. franka_gazebo/launch/panda.launch hardcodes
+     robot_description to franka_description/robots/panda/panda.urdf.xacro and
+     offers no way to point it elsewhere - only extra xacro args - so the scene
+     launch here builds robot_description from this file instead of including
+     panda.launch.
+
+     Everything else is franka's own franka_robot macro with gazebo:=true, so
+     FrankaHWSim, the transmissions and the franka_gripper action interface all
+     behave exactly as upstream. -->
+<robot name="panda" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:arg name="arm_id" default="panda" />
+  <xacro:arg name="hand"   default="true" />
+  <xacro:arg name="gazebo" default="true" />
+  <xacro:arg name="xyz"    default="0 0 0" />
+  <xacro:arg name="rpy"    default="0 0 0" />
+
+  <xacro:include filename="$(find franka_description)/robots/common/franka_robot.xacro" />
+
+  <xacro:franka_robot
+      arm_id="$(arg arm_id)"
+      joint_limits="${xacro.load_yaml('$(find franka_description)/robots/panda/joint_limits.yaml')}" />
+
+  <!-- Without this the fingers just squeeze a cube that squirts out or jitters:
+       ODE cannot hold a friction grasp at these contact scales. The plugin
+       welds the block to the palm once it sees opposing finger contacts for
+       grip_count_threshold consecutive checks, and releases when they stop.
+
+       palm_link must be panda_link7, not the panda_link8 / panda_hand you would
+       expect from the URDF. Gazebo lumps fixed joints, so link8, panda_hand and
+       panda_hand_tcp are all merged into link7 in the resulting SDF and simply
+       do not exist by name at runtime - the plugin reports
+       "Palm link [panda_link8] not found" and disables itself. The fingers
+       survive because their joints are prismatic.
+       Check with: rosservice call /gazebo/get_model_properties "model_name: panda" -->
+  <gazebo>
+    <plugin name="gazebo_grasp_fix" filename="libgazebo_grasp_fix.so">
+      <arm>
+        <arm_name>panda</arm_name>
+        <palm_link>$(arg arm_id)_link7</palm_link>
+        <gripper_link>$(arg arm_id)_leftfinger</gripper_link>
+        <gripper_link>$(arg arm_id)_rightfinger</gripper_link>
+      </arm>
+      <!-- Degrees, converted to radians by the plugin, and the floor it
+           accepts is 90. This is the angle by which the two finger contact
+           forces must DISAGREE before CheckGrip will call the object
+           gripped, so a lower number is more permissive. A block that sits
+           a little rotated in the jaws presents forces short of opposed,
+           and at 100 those grasps were being rejected outright - CheckGrip
+           also insists the weaker force be at least 30% of the stronger,
+           which is hardcoded and cannot be relaxed, so the angle is the
+           only margin available. 91 keeps a degree of headroom over the
+           floor and takes nothing away: two fingers on a cube are near
+           180 degrees apart when the grasp is good. -->
+      <forces_angle_tolerance>91</forces_angle_tolerance>
+      <!-- These three are one setting, not three, and they pull against each
+           other. Everything the plugin does is counted in ticks of update_rate,
+           in WALL time, and the two things being counted want opposite things:
+
+             attach  needs grip_count_threshold + 1 ticks in which the grip is
+                     judged good, and each tick is judged only on the contacts
+                     accumulated since the previous one
+             release needs max_grip_count - grip_count_threshold ticks of decay
+                     after the fingers open
+
+           The stock 4 / 2 / 8 gives a comfortable 250 ms of contact per tick,
+           but a 6-tick release lasting 1.5 s - and the executor retreats 0.5 s
+           after opening the fingers, so the block was still welded to the palm,
+           rode ~120 mm up with the hand and dropped out of mid-air onto the
+           tower.
+
+           Fixing that by raising update_rate alone to 50 Hz was wrong, and
+           quietly so. Release did drop to 120 ms, but each tick then had only
+           20 ms of contacts to judge and that is too short to reliably catch
+           both fingers at once, so the counter kept resetting before it reached
+           the attach threshold: measured, 7 successful attaches in 11 grasps.
+           The failures are silent - the fingers still hold the block by
+           friction, badly - so a run mostly works and then flings a block
+           across the table on the next fast move.
+
+           10 / 1 / 3 separates the two concerns instead of trading one for the
+           other: a 100 ms window per tick, attach after 2 ticks (200 ms),
+           release after 2 ticks (200 ms), which is well inside the 0.5 s before
+           the retreat begins. -->
+      <update_rate>10</update_rate>
+      <grip_count_threshold>1</grip_count_threshold>
+      <max_grip_count>3</max_grip_count>
+      <release_tolerance>0.005</release_tolerance>
+      <disable_collisions_on_attach>false</disable_collisions_on_attach>
+      <contact_topic>__default_topic__</contact_topic>
+    </plugin>
+  </gazebo>
+
+</robot>

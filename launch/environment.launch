@@ -1,0 +1,97 @@
+<?xml version="1.0"?>
+<!-- The scene only: Gazebo + blocks world + Panda with grasp-fix + ros_control
+     + MoveIt. No task node - something else drives the arm.
+
+         roslaunch panda_block_stack environment.launch
+
+     This deliberately does not include franka_gazebo/launch/panda.launch, even
+     though it mirrors it closely. That file hardcodes robot_description to
+     franka_description's panda.urdf.xacro, and the gazebo_grasp_fix model
+     plugin has to live inside the robot URDF - so the spawn is reproduced here
+     against urdf/panda_grasp.urdf.xacro. Keep this in step with panda.launch if
+     franka_ros is upgraded. -->
+<launch>
+  <arg name="headless" default="false" doc="Run Gazebo without its GUI" />
+  <arg name="rviz"     default="true"  doc="Show the MoveIt motion-planning display" />
+  <arg name="arm_id"   default="panda" />
+  <arg name="paused"   default="false" />
+  <arg name="world"    default="$(find panda_block_stack)/worlds/blocks.world" />
+  <!-- effort_joint_trajectory_controller is franka_gazebo's own default and
+       works with FrankaHWSim's gravity compensation. -->
+  <arg name="transmission" default="effort" />
+
+  <!-- Always start paused; the model spawner unpauses once the robot is in.
+
+       The <env> is what lets the lettered block faces resolve. blocks.world
+       names them as file://media/materials/..., which Gazebo looks up in the
+       entries of GAZEBO_RESOURCE_PATH, so this package root has to be on it -
+       otherwise the blocks come up unlettered (they keep their colours, which
+       the world states inline). setup_env.bash exports the same thing; doing it
+       here as well means the scene renders right however Gazebo was started.
+       The optenv default keeps Gazebo's own directory - its shader library and
+       the stock sun/ground_plane models - on the path when nothing set it. -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <env name="GAZEBO_RESOURCE_PATH"
+         value="$(find panda_block_stack):$(optenv GAZEBO_RESOURCE_PATH /usr/share/gazebo-11)" />
+    <arg name="world_name"   value="$(arg world)" />
+    <arg name="paused"       value="true" />
+    <arg name="gui"          value="$(eval not arg('headless'))" />
+    <arg name="use_sim_time" value="true" />
+  </include>
+
+  <param name="robot_description"
+         command="xacro $(find panda_block_stack)/urdf/panda_grasp.urdf.xacro
+                  gazebo:=true hand:=true arm_id:=$(arg arm_id)" />
+
+  <rosparam file="$(find franka_gazebo)/config/franka_hw_sim.yaml" subst_value="true" />
+  <rosparam file="$(find franka_gazebo)/config/sim_controllers.yaml" subst_value="true" />
+
+  <!-- End-effector mass, as franka_gazebo's panda.launch sets it. -->
+  <param name="m_ee" value="0.76" />
+
+  <arg name="unpause" value="$(eval '' if arg('paused') else '-unpause')" />
+  <node name="$(arg arm_id)_model_spawner" pkg="gazebo_ros" type="spawn_model"
+        args="-param robot_description -urdf -model $(arg arm_id) $(arg unpause)
+              -J $(arg arm_id)_joint1 0
+              -J $(arg arm_id)_joint2 -0.785398163
+              -J $(arg arm_id)_joint3 0
+              -J $(arg arm_id)_joint4 -2.35619449
+              -J $(arg arm_id)_joint5 0
+              -J $(arg arm_id)_joint6 1.57079632679
+              -J $(arg arm_id)_joint7 0.785398163397
+              -J $(arg arm_id)_finger_joint1 0.001
+              -J $(arg arm_id)_finger_joint2 0.001" />
+
+  <!-- Provides the franka_gripper move/grasp/stop actions the task nodes use. -->
+  <node pkg="controller_manager" type="spawner" name="$(arg arm_id)_gripper_spawner"
+        args="franka_gripper" respawn="false" output="screen" />
+
+  <node pkg="controller_manager" type="spawner" name="$(arg arm_id)_controller_spawner"
+        args="--wait-for initialized franka_state_controller $(arg transmission)_joint_trajectory_controller"
+        respawn="false" output="screen" />
+
+  <node name="joint_state_publisher" pkg="joint_state_publisher" type="joint_state_publisher">
+    <rosparam param="source_list">[franka_state_controller/joint_states, franka_gripper/joint_states]</rosparam>
+    <param name="rate" value="30" />
+  </node>
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" />
+
+  <!-- MoveIt. load_robot_description MUST be false: it defaults to true, and
+       roslaunch lets the last <param> win - so move_group would quietly replace
+       the URDF built above with franka_description's plain panda.urdf.xacro,
+       which has neither <inertial> blocks (Gazebo then drops every arm link)
+       nor the grasp-fix plugin. -->
+  <include file="$(find panda_moveit_config)/launch/move_group.launch">
+    <arg name="load_robot_description"   value="false" />
+    <arg name="load_gripper"             value="true" />
+    <arg name="moveit_controller_manager" value="simple" />
+    <arg name="transmission"             value="$(arg transmission)" />
+    <arg name="allow_trajectory_execution" value="true" />
+    <arg name="info"                     value="true" />
+  </include>
+
+  <include file="$(find panda_moveit_config)/launch/moveit_rviz.launch" if="$(arg rviz)">
+    <arg name="rviz_config" value="$(find panda_moveit_config)/launch/moveit.rviz" />
+  </include>
+
+</launch>

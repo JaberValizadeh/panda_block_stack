@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<!-- The scene, plus optionally the scripted stacking demo.
+
+     This is the entry point the other packages include:
+       panda_voice_stack/launch/voice_stack.launch
+       panda_block_planner/launch/demo.launch
+     Both pass run_demo:=false and drive the arm with their own node - two nodes
+     commanding one move_group collide.
+
+     run_demo:=true launches scripts/stack_blocks.py: it stacks block_A/B/C onto
+     one tower, unstacks them back onto the table, and repeats (run_demo_cycles
+     times, or forever if 0). Nothing that depends on this file passes
+     run_demo:=true, so this is opt-in and does not affect them. -->
+<launch>
+  <arg name="headless"  default="false" doc="Run Gazebo without its GUI" />
+  <arg name="rviz"      default="true"  doc="Show the MoveIt motion-planning display" />
+  <arg name="arm_id"    default="panda" />
+  <arg name="run_demo"  default="false" doc="Launch the stack/unstack loop demo" />
+  <arg name="run_demo_cycles" default="0" doc="Stack/unstack repetitions; 0 = forever" />
+  <arg name="transmission" default="effort" />
+  <!-- Forwarded so a package that needs a different scene can ask for one
+       without reproducing this whole bring-up. panda_block_planner passes
+       worlds/blocks6.world, which is this scene with three more cubes in it. -->
+  <arg name="world" default="$(find panda_block_stack)/worlds/blocks.world"
+       doc="Gazebo world to load" />
+
+  <include file="$(find panda_block_stack)/launch/environment.launch">
+    <arg name="headless"     value="$(arg headless)" />
+    <arg name="rviz"         value="$(arg rviz)" />
+    <arg name="arm_id"       value="$(arg arm_id)" />
+    <arg name="transmission" value="$(arg transmission)" />
+    <arg name="world"        value="$(arg world)" />
+  </include>
+
+  <!-- PYTHONUNBUFFERED: roslaunch redirects the node's stdout to a pipe, which
+       makes Python block-buffer it, and output="screen" then shows nothing at
+       all until the node exits. Same trap the README notes for gzserver. -->
+  <node name="stack_blocks" pkg="panda_block_stack" type="stack_blocks.py"
+        if="$(arg run_demo)" output="screen">
+    <env name="PYTHONUNBUFFERED" value="1" />
+    <param name="cycles" value="$(arg run_demo_cycles)" />
+  </node>
+
+</launch>
